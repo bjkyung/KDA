@@ -16,6 +16,8 @@ from loss import common
 from util import misc, metric
 from util.command_interface import command_interface
 from util.reporter import Reporter
+from torch import nn
+from torch.nn import functional as F
 
 
 class FeatMatchTrainer(ssltrainer.SSLTrainer):
@@ -83,43 +85,88 @@ class FeatMatchTrainer(ssltrainer.SSLTrainer):
         else:
             return None, None
 
-    def extract_fp(self):
+    # def extract_fp(self):
+    #     fl, yl = self.get_labeled_featrues()
+    #     fu, yu = self.get_unlabeled_features()
+    #     pk = self.config['model']['pk']
+    #     rl = self.config['model']['l_ratio']
+
+    #     fp, yp, lp = [], [], []
+    #     for yi in torch.unique(yl, sorted=True):
+    #         if fu is None:  # all prototypes extracted from labeled data
+    #             fpi = self.extract_fp_per_class(fl[yl == yi], pk, record_mean=True)
+    #             pkl = len(fpi)
+    #             fp.append(fpi)
+    #             yp.append(torch.full((pkl,), yi, device=self.default_device, dtype=torch.long))
+    #             lp.append(torch.ones_like(yp[-1]))
+    #         else:
+    #             if pk == 1:
+    #                 fpi = self.extract_fp_per_class(torch.cat([fl[yl == yi], fu[yu == yi]]), 1, record_mean=True)
+    #                 pkl = len(fpi)
+    #                 fp.append(fpi)
+    #                 yp.append(torch.full((pkl,), yi, device=self.default_device, dtype=torch.long))
+    #                 lp.append(torch.ones_like(yp[-1]))
+    #             else:
+    #                 # prototypes extracted from labeled data
+    #                 fpi = self.extract_fp_per_class(fl[yl == yi], max(1, int(round(pk*rl))), record_mean=True)
+    #                 pkl = len(fpi)
+    #                 fp.append(fpi)
+    #                 yp.append(torch.full((pkl,), yi, device=self.default_device, dtype=torch.long))
+    #                 lp.append(torch.ones_like(yp[-1]))
+    #                 # prototypes extracted from unlabeled data
+    #                 fpi = self.extract_fp_per_class(fu[yu == yi], max(1, pk - pkl), record_mean=True)
+    #                 pku = len(fpi)
+    #                 fp.append(fpi)
+    #                 yp.append(torch.full((pku,), yi, device=self.default_device, dtype=torch.long))
+    #                 lp.append(torch.zeros_like(yp[-1]))
+    #     fp = [tensor.to(self.default_device) for tensor in fp]
+    #     self.fp = torch.cat(fp).to(self.default_device)
+    #     self.yp = torch.cat(yp).to(self.default_device)
+    #     self.lp = torch.cat(lp).to(self.default_device)
+
+    def extract_fp(self, topk_only=True):    #topK만 쓴다면 True로, 아니면 False
         fl, yl = self.get_labeled_featrues()
         fu, yu = self.get_unlabeled_features()
         pk = self.config['model']['pk']
         rl = self.config['model']['l_ratio']
 
+        all_classes = torch.unique(yl, sorted=True)
+        if fu is not None and topk_only:
+            k = self.config['model']['classes'] // 2  # 클래스 수의 절반
+            topk_classes = torch.topk(torch.bincount(yu), k=k, largest=True).indices
+            other_classes = [cls for cls in all_classes if cls not in topk_classes]
+        else:
+            topk_classes = all_classes
+            other_classes = []
+
         fp, yp, lp = [], [], []
-        for yi in torch.unique(yl, sorted=True):
-            if fu is None:  # all prototypes extracted from labeled data
+        for yi in topk_classes:
+            if fu is None:
                 fpi = self.extract_fp_per_class(fl[yl == yi], pk, record_mean=True)
-                pkl = len(fpi)
-                fp.append(fpi)
-                yp.append(torch.full((pkl,), yi, device=self.default_device, dtype=torch.long))
-                lp.append(torch.ones_like(yp[-1]))
             else:
                 if pk == 1:
                     fpi = self.extract_fp_per_class(torch.cat([fl[yl == yi], fu[yu == yi]]), 1, record_mean=True)
-                    pkl = len(fpi)
-                    fp.append(fpi)
-                    yp.append(torch.full((pkl,), yi, device=self.default_device, dtype=torch.long))
-                    lp.append(torch.ones_like(yp[-1]))
                 else:
-                    # prototypes extracted from labeled data
                     fpi = self.extract_fp_per_class(fl[yl == yi], max(1, int(round(pk*rl))), record_mean=True)
-                    pkl = len(fpi)
                     fp.append(fpi)
-                    yp.append(torch.full((pkl,), yi, device=self.default_device, dtype=torch.long))
-                    lp.append(torch.ones_like(yp[-1]))
-                    # prototypes extracted from unlabeled data
-                    fpi = self.extract_fp_per_class(fu[yu == yi], max(1, pk - pkl), record_mean=True)
-                    pku = len(fpi)
-                    fp.append(fpi)
-                    yp.append(torch.full((pku,), yi, device=self.default_device, dtype=torch.long))
-                    lp.append(torch.zeros_like(yp[-1]))
+                    fpi = self.extract_fp_per_class(fu[yu == yi], max(1, pk - len(fpi)), record_mean=True)
+
+            pkl = len(fpi)
+            fp.append(fpi)
+            yp.append(torch.full((pkl,), yi, device=self.default_device, dtype=torch.long))
+            lp.append(torch.ones_like(yp[-1]) if yi in topk_classes else torch.zeros_like(yp[-1]))
+
+        for yi in other_classes:
+            tiny_offset = 1e-6    # 랜덤하게 초기화된 텐서 생성
+            random_init = torch.rand((1, fl.shape[1]), device=self.default_device) + tiny_offset #0으로 주면 forward시 문제생기므로 작은값 부여
+            fp.append(random_init) # 그래서 topK가 아닌 것에도 torch.full로 작은값(tiny_initialize) 주기
+            yp.append(torch.full((1,), yi, device=self.default_device, dtype=torch.long))
+            lp.append(torch.zeros((1,), device=self.default_device, dtype=torch.float))
+        
+        fp = [tensor.to(self.default_device) for tensor in fp]
         self.fp = torch.cat(fp).to(self.default_device)
         self.yp = torch.cat(yp).to(self.default_device)
-        self.lp = torch.cat(lp).to(self.default_device)
+        self.lp = torch.cat(lp).to(self.default_device)   
 
     def extract_fp_per_class(self, fx, n, record_mean=True):
         if n == 1:
@@ -128,7 +175,7 @@ class FeatMatchTrainer(ssltrainer.SSLTrainer):
             n = n-1
             fm = torch.mean(fx, dim=0, keepdim=True)
             if n >= len(fx):
-                fp = fx
+                fp = fx                                                
             else:
                 fp = self.kmeans(fx, n, 'cosine')
             fp = torch.cat([fm, fp], dim=0)
@@ -139,6 +186,7 @@ class FeatMatchTrainer(ssltrainer.SSLTrainer):
                 fp = self.kmeans(fx, n, 'cosine')
 
         return fp
+    
 
     @staticmethod
     def kmeans(fx, n, metric='cosine'):
@@ -225,7 +273,9 @@ class FeatMatchTrainer(ssltrainer.SSLTrainer):
 
         return pred_x, loss, loss_pred, loss_con, loss_graph
 
-    def train2(self, xl, yl, xu):
+    # Knowledge distillation을 한다면 perform_distillation=True, 그냥 featmatch만 한다면 False
+
+    def train2(self, xl, yl, xu, perform_distillation=True):
         bsl, bsu, k, c = len(xl), len(xu), xl.size(1), self.config['model']['classes']
         x = torch.cat([xl, xu], dim=0).reshape(-1, *xl.shape[2:])
         logits_xg, _, fx, _, _ = self.model(x, self.fp)
@@ -264,9 +314,44 @@ class FeatMatchTrainer(ssltrainer.SSLTrainer):
         # Graph loss
         loss_graph = self.criterion(None, probu_mix, logits_xfu_mix, None)
 
-        # Total loss
+        #지식증류
+        
+        # 1) teacher model 구성 및 현재 상태 load
+        if perform_distillation:
+            teacher_model = FeatMatch(backbone=self.config['model']['backbone'],
+                                      num_classes=self.config['model']['classes'],
+                                      devices=self.args.devices,
+                                      num_heads=self.config['model']['num_heads'],
+                                      amp=self.args.amp)
+            checkpoint = torch.load('weights/[cifar100][test][cnn13][4000]/run1/best_ckpt')
+            teacher_model.load_state_dict(checkpoint['model'])
+            teacher_model.to('cuda')
+            teacher_model.eval()
+
+            # KLDiv Loss
+            self.distillation_criterion = nn.KLDivLoss(reduction='batchmean')
+
+            teacher_dim = teacher_model(x_mix).size(1)  # teacher 모델의 출력 차원
+            student_dim = logits_xgu_mix.size(1)  # student 모델의 출력 차원
+            adaptive_layer = nn.Linear(teacher_dim, student_dim)
+            adaptive_layer.to('cuda')
+
+            with torch.no_grad():
+                logits_teacher_x = teacher_model(x_mix) # torch.Size([384, 128])
+                logits_teacher_x = logits_teacher_x[:logits_xgu_mix.size(0), :]  # 첫 256개의 샘플만 선택(student와 차원맞추기)
+                logits_teacher_adapted = adaptive_layer(logits_teacher_x)  # adaptive layer 적용
+                teacher_probs = F.log_softmax(logits_teacher_adapted / 3, dim=1)
+                student_probs = F.log_softmax(logits_xgu_mix / 3, dim=1)
+        
+            distillation_loss = self.distillation_criterion(student_probs, teacher_probs)
+        else:
+            distillation_loss = 0  # 지식 증류 과정이 실행되지 않을 경우 0으로 설정
+
+        # Total loss 계산 (지식 증류 가중치 포함:config 내 loss에 kld 항목 생성 및 가중치 적용)
         coeff = self.get_consistency_coeff()
         loss = loss_pred + coeff * (self.config['loss']['mix'] * loss_con + self.config['loss']['graph'] * loss_graph)
+        if perform_distillation:
+            loss += coeff * self.config['loss']['kld'] * distillation_loss
 
         # Prediction
         pred_x = torch.softmax(logits_xgl[:, 0].detach(), dim=1)

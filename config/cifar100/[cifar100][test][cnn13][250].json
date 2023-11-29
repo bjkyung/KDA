@@ -7,7 +7,7 @@
     "src_domains": null,
     "shape": 32,
     "Nv": 4000,
-    "Nl": 4000,
+    "Nl": 250,
     "Nu": null,
     "Wu": null,
     "Nd": 1.0
@@ -30,7 +30,6 @@
   {
     "mix": 0.5,
     "graph": 2.0,
-    "kld": 0.5,
     "criterion": "log_loss"
   },
 
@@ -61,7 +60,7 @@
     {
       "N": 2,
       "M": 9,
-      "K": 1,
+      "K": 8,
       "T": 0.75
     }
   }

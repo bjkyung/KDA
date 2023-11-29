@@ -67,11 +67,14 @@ class FeatMatch(nn.Module):
         elif self.mode == 'train':
             fx = self.extract_feature(x)
 
-            if self.devices is not None:
-                inputs = (fx, fp.unsqueeze(0).repeat(len(self.devices), 1, 1))
-                fxg, wx = nn.parallel.data_parallel(self.atten, inputs, device_ids=self.devices)
+            if fp is not None:
+                if self.devices is not None:
+                    inputs = (fx, fp.unsqueeze(0).repeat(len(self.devices), 1, 1))
+                    fxg, wx = nn.parallel.data_parallel(self.atten, inputs, device_ids=self.devices)
+                else:
+                    fxg, wx = self.atten(fx, fp.unsqueeze(0))
             else:
-                fxg, wx = self.atten(fx, fp.unsqueeze(0))
+                return self.extract_feature(x)
 
             cls_xf = self.clf(fx)
             cls_xg = self.clf(fxg)

@@ -47,7 +47,7 @@ class Cifar10SSL(CifarSSL):
 class Cifar100SSL(CifarSSL):
     @staticmethod
     def split_data(root_dir, tgt_domains, src_domains, r_val, r_lab, r_unlab, w_unlab, rand_seed, r_data=None):
-        root_dir = Path(root_dir)
+        root_dir = Path('/workspace/dataset/cifar-100-python')
 
         # test
         file = root_dir / 'test'
